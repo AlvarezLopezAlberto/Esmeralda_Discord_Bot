@@ -127,6 +127,9 @@ class NotionHandler:
                 "title": title,
                 "url": page.get("url"),
                 "icon": icon_url
+            }
+        except Exception as e:
+            import sys
             sys.stderr.write(f"Error fetching page {page_id}: {e}\n")
             return None
 
