@@ -1,0 +1,7 @@
+channels: []
+allowed_tools: ["search"]
+memory_policy:
+  scope: user
+  enabled: false
+prompt_path: prompts/notion.txt
+description: "Notion Search Tool and Slash Commands"

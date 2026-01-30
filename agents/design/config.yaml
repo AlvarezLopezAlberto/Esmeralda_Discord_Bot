@@ -1,0 +1,8 @@
+channels:
+  - 1458858450355224709 # #design-intake forum ID
+allowed_tools: []
+memory_policy:
+  scope: user_agent_topic
+  enabled: true
+prompt_path: prompts/design.txt
+description: "Senior UX Lead de la Agencia Interna. Quality Gate."

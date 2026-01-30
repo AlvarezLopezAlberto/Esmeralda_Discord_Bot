@@ -3,3 +3,5 @@ python-dotenv
 openai
 notion-client
 flask
+pyyaml
+aiofiles
