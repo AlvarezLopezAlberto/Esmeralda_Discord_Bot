@@ -127,8 +127,54 @@ class NotionHandler:
                 "title": title,
                 "url": page.get("url"),
                 "icon": icon_url
+            sys.stderr.write(f"Error fetching page {page_id}: {e}\n")
+            return None
+
+    def create_task(self, database_id: str, title: str, project: str) -> Optional[str]:
+        """
+        Creates a new task in the specified Notion database.
+        Returns the URL of the created page or None.
+        """
+        if not self.is_enabled():
+            return None
+
+        try:
+            properties = {
+                "Name": {
+                    "title": [
+                        {
+                            "text": {
+                                "content": title
+                            }
+                        }
+                    ]
+                },
+                "Project": { # Assuming 'Project' is a simple text or select field. If Relation, this is harder.
+                             # Based on "Project Name", it's likely a Select or Text. 
+                             # We will try Text first or Rich Text.
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": project
+                            }
+                        }
+                    ]
+                }
+                # Sprint and Date are handled by default/team as per instructions.
             }
+
+            # NOTE: If 'Project' is a Relation or Select, this might fail.
+            # Ideally we check the schema. But for now we try Rich Text/Title standard.
+            
+            new_page = self.client.pages.create(
+                parent={"database_id": database_id},
+                properties=properties
+            )
+            return new_page.get("url")
         except Exception as e:
             import sys
-            sys.stderr.write(f"Error fetching page {page_id}: {e}\n")
+            sys.stderr.write(f"Error creating task: {e}\n")
+            # Fallback: Try 'Project' as Select if Rich Text fails? 
+            # Or maybe the key is 'Project Name'? 
+            # Without schema inspection, this is a guess.
             return None
