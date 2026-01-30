@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 # Add src directory to path to allow imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from services.obsidian import ObsidianVaultHandler
 from services.notion import NotionHandler
 from services.llm import LLMHandler
 from keep_alive import keep_alive
@@ -16,11 +15,9 @@ from keep_alive import keep_alive
 # Load environment variables
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-VAULT_PATH = os.getenv("VAULT_PATH", "./Emerald Digital Operation")
 
 # Initialize Services
 # We will attach these to the bot instance in the setup_hook or main block
-obsidian_service = ObsidianVaultHandler(vault_path=VAULT_PATH)
 notion_service = NotionHandler()
 llm_service = LLMHandler()
 
@@ -31,13 +28,12 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         
         # Attach services
-        self.obsidian = obsidian_service
         self.notion = notion_service
         self.llm = llm_service
 
     async def setup_hook(self):
         # Load Cogs
-        cogs = ['cogs.daily_log', 'cogs.notion_integration', 'cogs.design_intake']
+        cogs = ['cogs.notion_integration', 'cogs.design_intake']
         for cog in cogs:
             try:
                 await self.load_extension(cog)
