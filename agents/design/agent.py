@@ -124,14 +124,4 @@ class DesignAgent(BaseAgent):
                 await message.channel.send(feedback)
 
     async def send_status(self, channel, is_valid, text):
-        embed = discord.Embed(
-            title="Design Intake Quality Gate",
-            description=text,
-            color=discord.Color.green() if is_valid else discord.Color.red()
-        )
-        if is_valid:
-            embed.set_footer(text="✅ APROBADO")
-        else:
-            embed.set_footer(text="❌ REVISIÓN REQUERIDA")
-        
-        await channel.send(embed=embed)
+        await channel.send(text)
