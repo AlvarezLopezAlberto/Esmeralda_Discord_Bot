@@ -133,7 +133,7 @@ class NotionHandler:
             sys.stderr.write(f"Error fetching page {page_id}: {e}\n")
             return None
 
-    def create_task(self, database_id: str, title: str, project: str) -> Optional[str]:
+    def create_task(self, database_id: str, title: str, project: str, sprint: str = "Current Sprint", content: Optional[str] = None) -> Optional[str]:
         """
         Creates a new task in the specified Notion database.
         Returns the URL of the created page or None.
@@ -152,32 +152,46 @@ class NotionHandler:
                         }
                     ]
                 },
-                "Project": { # Assuming 'Project' is a simple text or select field. If Relation, this is harder.
-                             # Based on "Project Name", it's likely a Select or Text. 
-                             # We will try Text first or Rich Text.
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": project
-                            }
-                        }
-                    ]
+                "Project": {
+                    "select": {
+                        "name": project
+                    }
+                },
+                "Sprint": {
+                     "select": {
+                         "name": sprint
+                     }
                 }
-                # Sprint and Date are handled by default/team as per instructions.
             }
 
-            # NOTE: If 'Project' is a Relation or Select, this might fail.
-            # Ideally we check the schema. But for now we try Rich Text/Title standard.
+            children = []
+            if content:
+                # Add content as children blocks (Paragraph)
+                # Split by newlines to avoid massive blocks if needed, 
+                # but simple text block is fine for now.
+                children.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {
+                                    "content": content
+                                }
+                            }
+                        ]
+                    }
+                })
             
             new_page = self.client.pages.create(
                 parent={"database_id": database_id},
-                properties=properties
+                properties=properties,
+                children=children
             )
             return new_page.get("url")
         except Exception as e:
             import sys
-            sys.stderr.write(f"Error creating task: {e}\n")
-            # Fallback: Try 'Project' as Select if Rich Text fails? 
-            # Or maybe the key is 'Project Name'? 
-            # Without schema inspection, this is a guess.
+            # Log full error to stderr for debugging
+            sys.stderr.write(f"Error creating task in Notion: {e}\n")
             return None

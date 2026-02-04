@@ -37,6 +37,19 @@ class DesignAgent(BaseAgent):
         # If it's the starter message, we treat it as a fresh validation
         current_state = self.state_store.get(thread_id, {}).get("state", "init")
         
+        # STATE RECOVERY: If state is init (e.g. restart), check if we were waiting for something based on chat history
+        if current_state == "init" and not is_starter:
+            try:
+                async for m in message.channel.history(limit=5):
+                    if m.author == self.bot.user:
+                        if "borrar el historial" in m.content or "borrar nuestros mensajes" in m.content:
+                            current_state = "waiting_delete"
+                        elif "Nombre del Proyecto" in m.content:
+                            current_state = "waiting_task_details"
+                        break
+            except Exception as e:
+                self.logger.warning(f"Failed to recover state: {e}")
+        
         system_prompt = f"""
         {prompt_template}
         
@@ -63,10 +76,41 @@ class DesignAgent(BaseAgent):
 
         # Execute Action
         if action == "approve":
-            await self.send_status(message.channel, True, feedback)
-            # Ask to clean up if conversations happened?
+            # 1. Automate Task Creation
+            project = extracted_data.get("project", "Sin Proyecto")
+            title = extracted_data.get("title", "Nueva Tarea de Diseño")
+            thread_url = message.jump_url
+            
+            # Create in Notion
+            notion_url = self.bot.notion.create_task(
+                self.notion_db_id, 
+                title, 
+                project, 
+                sprint="Current Sprint", 
+                content=f"Solicitud original en Discord: {thread_url}\n\nDescripción:\n{message.content}"
+            )
+            
+            # 2. Notify Design Team
+            request_channel_id = 1207375472955232266
+            request_channel = self.bot.get_channel(request_channel_id)
+            if request_channel:
+                await request_channel.send(
+                    f"<@&1458178611382325412> **Nueva Solicitud de Diseño Aprobada**\n"
+                    f"📂 **Proyecto:** {project}\n"
+                    f"📝 **Tarea:** {title}\n"
+                    f"🔗 **Notion:** {notion_url if notion_url else 'Error creando Notion'}\n"
+                    f"💬 **Hilo:** {thread_url}"
+                )
+
+            # 3. User Feedback
+            final_feedback = feedback
+            if notion_url:
+                final_feedback += f"\n\n✅ He creado la tarea en Notion por ti: {notion_url}"
+
+            await self.send_status(message.channel, True, final_feedback, final_approved=True)
+            
             if current_state != "init":
-                 await message.channel.send("¿Quieres borrar el historial de nuestra conversación? (Responde 'borrar')")
+                 await message.channel.send("¿Quieres borrar el historial de nuestra conversación para limpiar el hilo? (Responde 'sí')")
                  self.state_store[thread_id] = {"state": "waiting_delete"}
 
         elif action == "offer_creation":
@@ -75,11 +119,15 @@ class DesignAgent(BaseAgent):
             self.state_store[thread_id] = {"state": "waiting_task_details"}
 
         elif action == "create_task":
+            # This action might become redundant if "approve" does it, 
+            # but keep it for the flow where user explicitly asks after "offer_creation"
             project = extracted_data.get("project")
             title = extracted_data.get("title")
             
             if project and title:
-                url = self.bot.notion.create_task(self.notion_db_id, title, project)
+                url = self.bot.notion.create_task(
+                    self.notion_db_id, title, project, sprint="Current Sprint", content=f"Creado manualmente desde hilo: {message.jump_url}"
+                )
                 if url:
                     await message.channel.send(f"✅ Tarea creada: {url}\nPor favor edita tu post original para incluir este link y avísame cuando esté listo.")
                     self.state_store[thread_id] = {"state": "waiting_edit"}
@@ -92,26 +140,77 @@ class DesignAgent(BaseAgent):
             # Fetch starter message
             try:
                 starter = await message.channel.fetch_message(thread_id)
-                # Recursively call handle but treat as starter?
-                # Or just validate explicitly here.
-                # Let's simple-recurse logic by sending the starter content to LLM again as if it was new
+                # Redo LLM call with FRESH content
                 user_prompt = f"STARTER MESSAGE CONTENT: {starter.content}"
-                # Redo LLM call
+                
                 result_json_2 = self.bot.llm.generate_completion(prompt_template, user_prompt, json_mode=True)
                 resp_2 = json.loads(result_json_2)
                 
                 if resp_2.get("es_valido"):
-                    await self.send_status(message.channel, True, resp_2.get("feedback"))
+                    # Success! 
+                    # Extract Data from NEW response
+                    data_2 = resp_2.get("data", {})
+                    project = data_2.get("project", "Sin Proyecto")
+                    title = data_2.get("title", "Nueva Tarea de Diseño")
+                    thread_url = message.jump_url
+
+                    # Create Notion
+                    notion_url = self.bot.notion.create_task(
+                        self.notion_db_id, 
+                        title, 
+                        project, 
+                        sprint="Current Sprint", 
+                        content=f"Solicitud original en Discord (Intake): {thread_url}\n\nContenido:\n{starter.content}"
+                    )
+
+                    # Notify Team
+                    request_channel_id = 1207375472955232266
+                    request_channel = self.bot.get_channel(request_channel_id)
+                    if request_channel:
+                         await request_channel.send(
+                            f"<@&1458178611382325412> **Nueva Solicitud de Diseño Aprobada (Post Editado)**\n"
+                            f"📂 **Proyecto:** {project}\n"
+                            f"📝 **Tarea:** {title}\n"
+                            f"🔗 **Notion:** {notion_url if notion_url else 'Error creando Notion'}\n"
+                            f"💬 **Hilo:** {thread_url}"
+                        )
+
+                    feedback_text = resp_2.get("feedback")
+                    if notion_url:
+                        feedback_text += f"\n\n✅ He creado la tarea en Notion automáticamente: {notion_url}"
+
+                    await self.send_status(message.channel, True, feedback_text, final_approved=True)
                     await message.channel.send("¡Genial! ¿Quieres borrar nuestros mensajes de ayuda? (Responde 'sí')")
                     self.state_store[thread_id] = {"state": "waiting_delete"}
                 else:
+                    # Still invalid, normal text feedback
                     await self.send_status(message.channel, False, resp_2.get("feedback"))
-            except:
+            except Exception as e:
+                self.logger.error(f"Error fetching starter message: {e}")
+                import traceback
+                traceback.print_exc()
                 await message.channel.send("No pude leer el mensaje original.")
 
         elif action == "delete_history":
-             # User said yes to delete
-             await message.channel.purge(limit=100, check=lambda m: m.id != thread_id) # Delete all except starter
+             await message.channel.send("Limpiando conversación...")
+             try:
+                 # Delete messages in this thread that are NOT the starter message
+                 # We need to fetch history first
+                 messages_to_delete = []
+                 async for m in message.channel.history(limit=100):
+                     if m.id != thread_id:
+                         messages_to_delete.append(m)
+                 
+                 if messages_to_delete:
+                     if len(messages_to_delete) > 0:
+                         # bulk_delete is for TextChannel, for Thread use delete() one by one or purge if supported
+                         # Discord purge on threads often works.
+                         await message.channel.delete_messages(messages_to_delete)
+             except Exception as e:
+                 self.logger.error(f"Delete Error: {e}")
+                 # Fallback to simple purge which might be easier
+                 await message.channel.purge(limit=100, check=lambda m: m.id != thread_id)
+                 
              self.state_store.pop(thread_id, None)
 
         elif action == "request_edit":
@@ -123,5 +222,16 @@ class DesignAgent(BaseAgent):
             if feedback:
                 await message.channel.send(feedback)
 
-    async def send_status(self, channel, is_valid, text):
-        await channel.send(text)
+    async def send_status(self, channel, is_valid, text, final_approved=False):
+        if final_approved and is_valid:
+            # Show Green Embed ONLY for final approval
+            embed = discord.Embed(
+                title="Design Intake Quality Gate",
+                description=text,
+                color=discord.Color.green()
+            )
+            embed.set_footer(text="✅ APROBADO")
+            await channel.send(embed=embed)
+        else:
+            # Standard conversational text
+            await channel.send(text)
