@@ -195,3 +195,19 @@ class NotionHandler:
             # Log full error to stderr for debugging
             sys.stderr.write(f"Error creating task in Notion: {e}\n")
             return None
+
+    def delete_page(self, page_id: str) -> bool:
+        """
+        Archives (deletes) a page in Notion by ID.
+        Returns True if successful, False otherwise.
+        """
+        if not self.is_enabled():
+            return False
+
+        try:
+            self.client.pages.update(page_id=page_id, archived=True)
+            return True
+        except Exception as e:
+            import sys
+            sys.stderr.write(f"Error deleting page {page_id}: {e}\n")
+            return False

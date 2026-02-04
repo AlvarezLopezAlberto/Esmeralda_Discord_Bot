@@ -132,7 +132,24 @@ class DesignAgent(BaseAgent):
                     await message.channel.send(f"✅ Tarea creada: {url}\nPor favor edita tu post original para incluir este link y avísame cuando esté listo.")
                     self.state_store[thread_id] = {"state": "waiting_edit"}
                 else:
-                    await message.channel.send("❌ Error creando la tarea en Notion. Inténtalo manual.")
+                    # Increment failure count
+                    current_errors = self.state_store.get(thread_id, {}).get("notion_errors", 0) + 1
+                    
+                    if current_errors >= 2:
+                        await message.channel.send(
+                            "❌ No he podido crear la tarea automáticamente tras varios intentos.\n"
+                            "Por favor, usa este formulario manual para darla de alta:\n"
+                            "https://www.notion.so/emerald-dev/2fdd14a8642b80edb194deed54c6449e?pvs=106\n\n"
+                            "Una vez creada, pega el link aquí."
+                        )
+                        # Reset to waiting for the link (or some neutral state)
+                        self.state_store[thread_id] = {"state": "waiting_edit", "notion_errors": 0} 
+                    else:
+                        await message.channel.send("❌ Error creando la tarea en Notion. Inténtalo de nuevo o revisa los datos.")
+                        # Retain state but update errors
+                        state_data = self.state_store.get(thread_id, {"state": "waiting_task_details"})
+                        state_data["notion_errors"] = current_errors
+                        self.state_store[thread_id] = state_data
             else:
                 await message.channel.send("No pude entender el nombre del proyecto o tarea. ¿Podrías repetirlo? (Formato: Proyecto - Tarea)")
 
