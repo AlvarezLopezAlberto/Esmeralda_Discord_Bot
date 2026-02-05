@@ -133,10 +133,14 @@ class NotionHandler:
             sys.stderr.write(f"Error fetching page {page_id}: {e}\n")
             return None
 
-    def create_task(self, database_id: str, title: str, project: str, sprint: str = "Current Sprint", content: Optional[str] = None) -> Optional[str]:
+    def create_task(self, database_id: str, title: str, project: str, deadline: Optional[str] = None, content: Optional[str] = None) -> Optional[str]:
         """
         Creates a new task in the specified Notion database.
         Returns the URL of the created page or None.
+        Matches schema:
+        - Name (title)
+        - Proyecto (multi_select)
+        - Fecha de entrega (date)
         """
         if not self.is_enabled():
             return None
@@ -151,24 +155,30 @@ class NotionHandler:
                             }
                         }
                     ]
-                },
-                "Project": {
-                    "select": {
-                        "name": project
-                    }
-                },
-                "Sprint": {
-                     "select": {
-                         "name": sprint
-                     }
                 }
             }
+
+            if project and project != "Sin Proyecto":
+                properties["Proyecto"] = {
+                    "multi_select": [
+                        {"name": project}
+                    ]
+                }
+            
+            if deadline:
+                # Assuming deadline string is ISO 8601 or YYYY-MM-DD
+                # If LLM extracts "next friday", we might need to parse it. 
+                # For now, we assume the agent passes a valid date string or we skip it if invalid format logic is needed.
+                # But simple string is robust if standardized.
+                properties["Fecha de entrega"] = {
+                    "date": {
+                        "start": deadline
+                    }
+                }
 
             children = []
             if content:
                 # Add content as children blocks (Paragraph)
-                # Split by newlines to avoid massive blocks if needed, 
-                # but simple text block is fine for now.
                 children.append({
                     "object": "block",
                     "type": "paragraph",
@@ -177,7 +187,7 @@ class NotionHandler:
                             {
                                 "type": "text",
                                 "text": {
-                                    "content": content
+                                    "content": content[:2000] # Truncate to avoid Notion limit
                                 }
                             }
                         ]
@@ -192,7 +202,6 @@ class NotionHandler:
             return new_page.get("url")
         except Exception as e:
             import sys
-            # Log full error to stderr for debugging
             sys.stderr.write(f"Error creating task in Notion: {e}\n")
             return None
 

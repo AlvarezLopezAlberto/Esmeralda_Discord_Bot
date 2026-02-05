@@ -79,14 +79,15 @@ class DesignAgent(BaseAgent):
             # 1. Automate Task Creation
             project = extracted_data.get("project", "Sin Proyecto")
             title = extracted_data.get("title", "Nueva Tarea de Diseño")
+            deadline = extracted_data.get("deadline")  # ISO format YYYY-MM-DD or None
             thread_url = message.jump_url
             
             # Create in Notion
             notion_url = self.bot.notion.create_task(
                 self.notion_db_id, 
                 title, 
-                project, 
-                sprint="Current Sprint", 
+                project,
+                deadline=deadline,
                 content=f"Solicitud original en Discord: {thread_url}\n\nDescripción:\n{message.content}"
             )
             
@@ -113,20 +114,22 @@ class DesignAgent(BaseAgent):
                  await message.channel.send("¿Quieres borrar el historial de nuestra conversación para limpiar el hilo? (Responde 'sí')")
                  self.state_store[thread_id] = {"state": "waiting_delete"}
 
-        elif action == "offer_creation":
-            await self.send_status(message.channel, False, feedback)
-            await message.channel.send("¿Quieres que cree la tarea de Notion por ti? Responde con el **Nombre del Proyecto** y el **Título de la Tarea**.")
-            self.state_store[thread_id] = {"state": "waiting_task_details"}
+        elif action == "synthesize":
+            # LLM has synthesized the information from chat history
+            # Present it to the user for copy/paste
+            await message.channel.send(feedback)
+            self.state_store[thread_id] = {"state": "waiting_edit"}
 
         elif action == "create_task":
             # This action might become redundant if "approve" does it, 
             # but keep it for the flow where user explicitly asks after "offer_creation"
             project = extracted_data.get("project")
             title = extracted_data.get("title")
+            deadline = extracted_data.get("deadline")
             
             if project and title:
                 url = self.bot.notion.create_task(
-                    self.notion_db_id, title, project, sprint="Current Sprint", content=f"Creado manualmente desde hilo: {message.jump_url}"
+                    self.notion_db_id, title, project, deadline=deadline, content=f"Creado manualmente desde hilo: {message.jump_url}"
                 )
                 if url:
                     await message.channel.send(f"✅ Tarea creada: {url}\nPor favor edita tu post original para incluir este link y avísame cuando esté listo.")
@@ -169,14 +172,15 @@ class DesignAgent(BaseAgent):
                     data_2 = resp_2.get("data", {})
                     project = data_2.get("project", "Sin Proyecto")
                     title = data_2.get("title", "Nueva Tarea de Diseño")
+                    deadline = data_2.get("deadline")
                     thread_url = message.jump_url
 
                     # Create Notion
                     notion_url = self.bot.notion.create_task(
                         self.notion_db_id, 
                         title, 
-                        project, 
-                        sprint="Current Sprint", 
+                        project,
+                        deadline=deadline,
                         content=f"Solicitud original en Discord (Intake): {thread_url}\n\nContenido:\n{starter.content}"
                     )
 
