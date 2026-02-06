@@ -46,6 +46,9 @@ class DesignAgent(BaseAgent):
                             current_state = "waiting_delete"
                         elif "Nombre del Proyecto" in m.content:
                             current_state = "waiting_task_details"
+                        elif "He creado la tarea en Notion" in m.content:
+                            # Thread was already approved, extract notion URL if possible
+                            current_state = "approved"
                         break
             except Exception as e:
                 self.logger.warning(f"Failed to recover state: {e}")
@@ -82,11 +85,33 @@ class DesignAgent(BaseAgent):
 
         # Execute Action
         if action == "approve":
+            # Check if this thread already has a Notion task
+            existing_notion_url = self.state_store.get(thread_id, {}).get("notion_url")
+            
+            if existing_notion_url:
+                # Task already exists, don't create duplicate
+                await self.send_status(
+                    message.channel, 
+                    True, 
+                    f"Mi trabajo aquí está completo. La tarea ya fue creada en Notion: {existing_notion_url}\n\nEl equipo de diseño pronto comenzará a trabajar en tu solicitud usando este hilo. ¡Gracias!",
+                    final_approved=True
+                )
+                # Update state to prevent further processing
+                self.state_store[thread_id] = {"state": "approved", "notion_url": existing_notion_url}
+                return
+            
             # 1. Automate Task Creation
             project = extracted_data.get("project", "Sin Proyecto")
             title = extracted_data.get("title", "Nueva Tarea de Diseño")
             deadline = extracted_data.get("deadline")  # ISO format YYYY-MM-DD or None
             thread_url = message.jump_url
+            
+            # Fetch starter message for full context
+            try:
+                starter = await message.channel.fetch_message(thread_id)
+                full_content = starter.content
+            except:
+                full_content = message.content
             
             # Create in Notion
             notion_url = self.bot.notion.create_task(
@@ -94,8 +119,18 @@ class DesignAgent(BaseAgent):
                 title, 
                 project,
                 deadline=deadline,
-                content=f"Solicitud original en Discord: {thread_url}\n\nDescripción:\n{message.content}"
+                content=f"Solicitud original en Discord: {thread_url}\n\nDescripción:\n{full_content}"
             )
+            
+            # Verify creation was successful
+            if not notion_url:
+                await message.channel.send(
+                    "❌ Hubo un error al crear la tarea en Notion. Por favor intenta de nuevo o contacta al equipo de soporte."
+                )
+                return
+            
+            # Store the notion_url in state to prevent duplicates
+            self.state_store[thread_id] = {"state": "approved", "notion_url": notion_url}
             
             # 2. Notify Design Team
             request_channel_id = 1207375472955232266
@@ -105,20 +140,15 @@ class DesignAgent(BaseAgent):
                     f"<@&1458178611382325412> **Nueva Solicitud de Diseño Aprobada**\n"
                     f"📂 **Proyecto:** {project}\n"
                     f"📝 **Tarea:** {title}\n"
-                    f"🔗 **Notion:** {notion_url if notion_url else 'Error creando Notion'}\n"
+                    f"🔗 **Notion:** {notion_url}\n"
                     f"💬 **Hilo:** {thread_url}"
                 )
 
             # 3. User Feedback
             final_feedback = feedback
-            if notion_url:
-                final_feedback += f"\n\n✅ He creado la tarea en Notion por ti: {notion_url}"
+            final_feedback += f"\n\n✅ He creado la tarea en Notion por ti: {notion_url}"
 
             await self.send_status(message.channel, True, final_feedback, final_approved=True)
-            
-            if current_state != "init":
-                 await message.channel.send("¿Quieres borrar el historial de nuestra conversación para limpiar el hilo? (Responde 'sí')")
-                 self.state_store[thread_id] = {"state": "waiting_delete"}
 
         elif action == "synthesize":
             # LLM has synthesized the information from chat history
@@ -243,6 +273,11 @@ class DesignAgent(BaseAgent):
         elif action == "request_edit":
             await self.send_status(message.channel, False, feedback)
             self.state_store[thread_id] = {"state": "waiting_edit"}
+
+        elif action == "handoff":
+            # Post-approval handoff - bot is done, hand over to design team
+            await message.channel.send(feedback)
+            # Keep state as approved to prevent further processing
 
         else:
             # Generic reply or wait
