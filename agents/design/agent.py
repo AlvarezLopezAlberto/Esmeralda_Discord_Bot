@@ -50,6 +50,8 @@ class DesignAgent(BaseAgent):
             except Exception as e:
                 self.logger.warning(f"Failed to recover state: {e}")
         
+        starter_content, recent_history = await self._build_thread_context(message.channel, thread_id)
+
         system_prompt = f"""
         {prompt_template}
         
@@ -58,7 +60,11 @@ class DesignAgent(BaseAgent):
         """
         
         # If user replies, we feed that into the LLM logic
-        user_prompt = f"Message: {message.content}"
+        user_prompt = (
+            f"STARTER MESSAGE CONTENT:\n{starter_content}\n\n"
+            f"RECENT THREAD HISTORY (newest last):\n{recent_history}\n\n"
+            f"LATEST USER MESSAGE:\n{message.content}"
+        )
         
         # If the user says "I edited it" or similar, we might need to fetch the starter message again
         # naive check or let LLM decide action="validate_edit"
@@ -242,6 +248,34 @@ class DesignAgent(BaseAgent):
             # Generic reply or wait
             if feedback:
                 await message.channel.send(feedback)
+
+    async def _build_thread_context(self, channel: discord.Thread, thread_id: int, limit: int = 20):
+        """Builds a compact context payload so the LLM can synthesize across the full conversation."""
+        starter_content = ""
+        recent_messages = []
+
+        try:
+            starter = await channel.fetch_message(thread_id)
+            starter_content = starter.content or ""
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch starter message: {e}")
+
+        try:
+            history_items = []
+            async for m in channel.history(limit=limit, oldest_first=True):
+                author = "BOT" if m.author == self.bot.user else "USER"
+                content = (m.content or "").strip()
+
+                if not content:
+                    continue
+
+                history_items.append(f"[{author}] {content}")
+
+            recent_messages = history_items
+        except Exception as e:
+            self.logger.warning(f"Failed to read thread history: {e}")
+
+        return starter_content, "\n".join(recent_messages)
 
     async def send_status(self, channel, is_valid, text, final_approved=False):
         if final_approved and is_valid:
