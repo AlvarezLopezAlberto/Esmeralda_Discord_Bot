@@ -77,6 +77,7 @@ class DesignAgent(BaseAgent):
             response_data = json.loads(result_json)
         except Exception as e:
             self.logger.error(f"LLM Error: {e}")
+            await message.channel.send("⚠️ Lo siento, estoy teniendo problemas técnicos para procesar tu solicitud en este momento. Por favor, inténtalo más tarde o contacta a soporte.")
             return
 
         action = response_data.get("action", "wait")

@@ -9,6 +9,21 @@ async def process_notion_links(message: discord.Message, notion_service):
     """
     content = message.content
     
+    # CRITICAL: Skip starter messages in intake forum threads
+    # The intake channel ID where Esmeralda validates posts
+    INTAKE_CHANNEL_ID = 1458858450355224709
+    
+    if isinstance(message.channel, discord.Thread):
+        # Check if this is the starter message (thread ID == message ID)
+        is_starter = message.id == message.channel.id
+        # Check if thread belongs to intake forum
+        is_intake_thread = message.channel.parent_id == INTAKE_CHANNEL_ID
+        
+        if is_starter and is_intake_thread:
+            # DO NOT process starter messages in intake threads
+            # Esmeralda needs the original message to validate
+            return False
+    
     # Check for Notion domains
     if "notion.so" not in content and "notion.site" not in content:
         return False
