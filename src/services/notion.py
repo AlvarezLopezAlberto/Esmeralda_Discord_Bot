@@ -77,6 +77,172 @@ class NotionHandler:
             print(f"Error searching Notion: {e}")
             return []
 
+    def _get_database_properties(self, database_id: str) -> Dict:
+        if not self.is_enabled():
+            return {}
+
+        import time
+        cache_key = f"db_props:{database_id}"
+        now = time.time()
+        if cache_key in self._cache:
+            timestamp, cached_results = self._cache[cache_key]
+            if now - timestamp < self._cache_ttl:
+                return cached_results or {}
+
+        try:
+            db = self.client.databases.retrieve(database_id=database_id)
+            props = db.get("properties", {}) or {}
+            self._cache[cache_key] = (now, props)
+            return props
+        except Exception as e:
+            print(f"Error retrieving Notion database properties: {e}")
+            return {}
+
+    def ensure_database_property(self, database_id: str, property_name: str, property_type: str = "url") -> bool:
+        if not self.is_enabled():
+            return False
+
+        props = self._get_database_properties(database_id)
+        if property_name in props:
+            return True
+
+        try:
+            self.client.databases.update(
+                database_id=database_id,
+                properties={property_name: {property_type: {}}}
+            )
+            # Bust cache
+            self._cache.pop(f"db_props:{database_id}", None)
+            return True
+        except Exception as e:
+            print(f"Error updating Notion database with property '{property_name}': {e}")
+            return False
+
+    def set_page_property(self, page_id: str, property_name: str, property_type: str, value: str) -> bool:
+        if not self.is_enabled():
+            return False
+
+        try:
+            if property_type == "url":
+                properties = {property_name: {"url": value}}
+            elif property_type == "rich_text":
+                properties = {property_name: {"rich_text": [{"text": {"content": value}}]}}
+            else:
+                return False
+
+            self.client.pages.update(page_id=page_id, properties=properties)
+            return True
+        except Exception as e:
+            print(f"Error updating Notion page property '{property_name}': {e}")
+            return False
+
+    def update_task_with_thread_link(
+        self,
+        database_id: str,
+        page_id: str,
+        thread_url: str,
+        property_name: str = "Discord Thread"
+    ) -> bool:
+        if not self.is_enabled():
+            return False
+
+        if not thread_url:
+            return False
+
+        props = self._get_database_properties(database_id)
+        prop_info = props.get(property_name)
+
+        if not prop_info:
+            if not self.ensure_database_property(database_id, property_name, "url"):
+                return False
+            prop_type = "url"
+        else:
+            prop_type = prop_info.get("type")
+
+        if prop_type not in {"url", "rich_text"}:
+            print(f"Unsupported property type for '{property_name}': {prop_type}")
+            return False
+
+        return self.set_page_property(page_id, property_name, prop_type, thread_url)
+
+    def find_task_by_discord_thread(
+        self,
+        database_id: str,
+        guild_id: int,
+        thread_id: int,
+        property_name: str = "Discord Thread",
+        require_property: bool = True
+    ) -> Optional[str]:
+        """
+        Searches Notion for a page containing the Discord thread link and belonging to the given database.
+        Returns the page URL if found.
+        """
+        if not self.is_enabled():
+            return None
+
+        if not guild_id or not thread_id:
+            return None
+
+        import time
+        exact_thread_url = f"https://discord.com/channels/{guild_id}/{thread_id}/{thread_id}"
+        search_query = f"discord.com/channels/{guild_id}/{thread_id}"
+        cache_key = f"thread:{database_id}:{exact_thread_url}"
+        now = time.time()
+        if cache_key in self._cache:
+            timestamp, cached_results = self._cache[cache_key]
+            if now - timestamp < self._cache_ttl:
+                return cached_results
+
+        try:
+            props = self._get_database_properties(database_id)
+            prop_info = props.get(property_name)
+            if prop_info:
+                prop_type = prop_info.get("type")
+                if prop_type == "url":
+                    filter_payload = {"property": property_name, "url": {"equals": exact_thread_url}}
+                elif prop_type == "rich_text":
+                    filter_payload = {"property": property_name, "rich_text": {"equals": exact_thread_url}}
+                else:
+                    filter_payload = None
+
+                if filter_payload:
+                    response = self.client.databases.query(
+                        database_id=database_id,
+                        filter=filter_payload,
+                        page_size=1
+                    )
+                    results = response.get("results", [])
+                    if results:
+                        notion_url = results[0].get("url")
+                        self._cache[cache_key] = (now, notion_url)
+                        return notion_url
+            elif require_property:
+                self._cache[cache_key] = (now, None)
+                return None
+
+            if require_property:
+                self._cache[cache_key] = (now, None)
+                return None
+
+            response = self.client.search(
+                query=search_query,
+                filter={"value": "page", "property": "object"},
+                page_size=10
+            )
+
+            notion_url = None
+            for page in response.get("results", []):
+                parent = page.get("parent", {})
+                if parent.get("type") == "database_id" and parent.get("database_id") == database_id:
+                    notion_url = page.get("url")
+                    break
+
+            self._cache[cache_key] = (now, notion_url)
+            return notion_url
+        except Exception as e:
+            print(f"Error searching Notion for thread URL: {e}")
+            return None
+
     @staticmethod
     def extract_page_id(url: str) -> Optional[str]:
         """
@@ -133,7 +299,16 @@ class NotionHandler:
             sys.stderr.write(f"Error fetching page {page_id}: {e}\n")
             return None
 
-    def create_task(self, database_id: str, title: str, project: str, deadline: Optional[str] = None, content: Optional[str] = None) -> Optional[str]:
+    def create_task(
+        self,
+        database_id: str,
+        title: str,
+        project: str,
+        deadline: Optional[str] = None,
+        content: Optional[str] = None,
+        thread_url: Optional[str] = None,
+        thread_property_name: str = "Discord Thread"
+    ) -> Optional[str]:
         """
         Creates a new task in the specified Notion database.
         Returns the URL of the created page or None.
@@ -175,6 +350,12 @@ class NotionHandler:
                         "start": deadline
                     }
                 }
+
+            if thread_url:
+                if self.ensure_database_property(database_id, thread_property_name, "url"):
+                    properties[thread_property_name] = {
+                        "url": thread_url
+                    }
 
             children = []
             if content:

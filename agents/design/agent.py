@@ -1,6 +1,8 @@
 import discord
 import json
 import logging
+import os
+import datetime
 from adk.base import BaseAgent
 
 class DesignAgent(BaseAgent):
@@ -8,8 +10,66 @@ class DesignAgent(BaseAgent):
         super().__init__(bot, agent_name, agent_dir)
         self.target_channel_id = 1458858450355224709
         self.notion_db_id = "9b1d386dbae1401b8a58af5a792e8f1f"
-        # Simple in-memory state: {thread_id: {"state": "...", "data": ...}}
-        self.state_store = {}
+        self.existing_exception_thread_ids = {1470846699198222489}
+        # Persistent state: {thread_id: {"state": "...", "notion_url": "...", "updated_at": "..."}}
+        self.state_store = self._load_state()
+        self.boot_time = datetime.datetime.now(datetime.timezone.utc)
+
+    def _state_path(self):
+        return os.path.join(os.getcwd(), "memory", "design_intake_state.json")
+
+    def _load_state(self):
+        path = self._state_path()
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            self.logger.warning(f"Failed to load state store: {e}")
+            return {}
+
+    def _save_state(self):
+        path = self._state_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path, "w") as f:
+                json.dump(self.state_store, f)
+        except Exception as e:
+            self.logger.warning(f"Failed to save state store: {e}")
+
+    def _get_thread_state(self, thread_id: int):
+        return self.state_store.get(str(thread_id), {})
+
+    def _set_thread_state(self, thread_id: int, data: dict):
+        data = dict(data or {})
+        data["updated_at"] = datetime.datetime.utcnow().isoformat()
+        self.state_store[str(thread_id)] = data
+        self._save_state()
+
+    def _clear_thread_state(self, thread_id: int):
+        self.state_store.pop(str(thread_id), None)
+        self._save_state()
+
+    def _thread_link(self, message: discord.Message, thread_id: int) -> str:
+        if message.guild:
+            return f"https://discord.com/channels/{message.guild.id}/{thread_id}/{thread_id}"
+        return message.jump_url
+
+    async def _recover_state_from_history(self, channel: discord.Thread, thread_id: int) -> str:
+        try:
+            async for m in channel.history(limit=10):
+                if m.author == self.bot.user:
+                    if "borrar el historial" in m.content or "borrar nuestros mensajes" in m.content:
+                        return "waiting_delete"
+                    if "Nombre del Proyecto" in m.content:
+                        return "waiting_task_details"
+                    if "He creado la tarea en Notion" in m.content:
+                        return "approved"
+                    break
+        except Exception as e:
+            self.logger.warning(f"Failed to recover state: {e}")
+        return "init"
 
     async def can_handle(self, message: discord.Message) -> bool:
         """
@@ -29,29 +89,56 @@ class DesignAgent(BaseAgent):
     async def handle(self, message: discord.Message):
         thread_id = message.channel.id
         is_starter = (message.id == thread_id)
+
+        state_entry = self._get_thread_state(thread_id)
+        current_state = state_entry.get("state", "init")
+
+        # If thread was already handled, do nothing to avoid re-processing after restarts
+        if current_state in {"approved", "ignored_existing"}:
+            if current_state == "ignored_existing" and thread_id in self.existing_exception_thread_ids:
+                self._clear_thread_state(thread_id)
+                current_state = "init"
+            else:
+                return
+
+        # If no state, try recovery or Notion double-check
+        if current_state == "init":
+            # Recover from history (bot already interacted)
+            recovered_state = await self._recover_state_from_history(message.channel, thread_id)
+            if recovered_state != "init":
+                current_state = recovered_state
+                self._set_thread_state(thread_id, {"state": current_state})
+                if current_state == "approved":
+                    return
+
+            # Ignore pre-existing threads on boot if still init
+            try:
+                if (
+                    message.channel.created_at
+                    and message.channel.created_at < self.boot_time
+                    and thread_id not in self.existing_exception_thread_ids
+                ):
+                    self._set_thread_state(thread_id, {"state": "ignored_existing"})
+                    return
+            except Exception:
+                pass
+
+            # Notion double-check: if a task already exists for this thread, do nothing
+            if message.guild:
+                existing_url = self.bot.notion.find_task_by_discord_thread(
+                    self.notion_db_id,
+                    message.guild.id,
+                    thread_id
+                )
+                if existing_url:
+                    self._set_thread_state(thread_id, {"state": "approved", "notion_url": existing_url})
+                    return
         
         # Load Prompt
         prompt_template = self.load_prompt()
         
         # Context building
         # If it's the starter message, we treat it as a fresh validation
-        current_state = self.state_store.get(thread_id, {}).get("state", "init")
-        
-        # STATE RECOVERY: If state is init (e.g. restart), check if we were waiting for something based on chat history
-        if current_state == "init" and not is_starter:
-            try:
-                async for m in message.channel.history(limit=5):
-                    if m.author == self.bot.user:
-                        if "borrar el historial" in m.content or "borrar nuestros mensajes" in m.content:
-                            current_state = "waiting_delete"
-                        elif "Nombre del Proyecto" in m.content:
-                            current_state = "waiting_task_details"
-                        elif "He creado la tarea en Notion" in m.content:
-                            # Thread was already approved, extract notion URL if possible
-                            current_state = "approved"
-                        break
-            except Exception as e:
-                self.logger.warning(f"Failed to recover state: {e}")
         
         starter_content, recent_history = await self._build_thread_context(message.channel, thread_id)
 
@@ -87,7 +174,7 @@ class DesignAgent(BaseAgent):
         # Execute Action
         if action == "approve":
             # Check if this thread already has a Notion task
-            existing_notion_url = self.state_store.get(thread_id, {}).get("notion_url")
+            existing_notion_url = self._get_thread_state(thread_id).get("notion_url")
             
             if existing_notion_url:
                 # Task already exists, don't create duplicate
@@ -98,14 +185,14 @@ class DesignAgent(BaseAgent):
                     final_approved=True
                 )
                 # Update state to prevent further processing
-                self.state_store[thread_id] = {"state": "approved", "notion_url": existing_notion_url}
+                self._set_thread_state(thread_id, {"state": "approved", "notion_url": existing_notion_url})
                 return
             
             # 1. Automate Task Creation
             project = extracted_data.get("project", "Sin Proyecto")
             title = extracted_data.get("title", "Nueva Tarea de Diseño")
             deadline = extracted_data.get("deadline")  # ISO format YYYY-MM-DD or None
-            thread_url = message.jump_url
+            thread_url = self._thread_link(message, thread_id)
             
             # Fetch starter message for full context
             try:
@@ -120,7 +207,8 @@ class DesignAgent(BaseAgent):
                 title, 
                 project,
                 deadline=deadline,
-                content=f"Solicitud original en Discord: {thread_url}\n\nDescripción:\n{full_content}"
+                content=f"Solicitud original en Discord: {thread_url}\n\nDescripción:\n{full_content}",
+                thread_url=thread_url
             )
             
             # Verify creation was successful
@@ -131,7 +219,7 @@ class DesignAgent(BaseAgent):
                 return
             
             # Store the notion_url in state to prevent duplicates
-            self.state_store[thread_id] = {"state": "approved", "notion_url": notion_url}
+            self._set_thread_state(thread_id, {"state": "approved", "notion_url": notion_url})
             
             # 2. Notify Design Team
             request_channel_id = 1207375472955232266
@@ -155,7 +243,7 @@ class DesignAgent(BaseAgent):
             # LLM has synthesized the information from chat history
             # Present it to the user for copy/paste
             await message.channel.send(feedback)
-            self.state_store[thread_id] = {"state": "waiting_edit"}
+            self._set_thread_state(thread_id, {"state": "waiting_edit"})
 
         elif action == "create_task":
             # This action might become redundant if "approve" does it, 
@@ -165,15 +253,21 @@ class DesignAgent(BaseAgent):
             deadline = extracted_data.get("deadline")
             
             if project and title:
+                thread_url = self._thread_link(message, thread_id)
                 url = self.bot.notion.create_task(
-                    self.notion_db_id, title, project, deadline=deadline, content=f"Creado manualmente desde hilo: {message.jump_url}"
+                    self.notion_db_id,
+                    title,
+                    project,
+                    deadline=deadline,
+                    content=f"Creado manualmente desde hilo: {thread_url}",
+                    thread_url=thread_url
                 )
                 if url:
                     await message.channel.send(f"✅ Tarea creada: {url}\nPor favor edita tu post original para incluir este link y avísame cuando esté listo.")
-                    self.state_store[thread_id] = {"state": "waiting_edit"}
+                    self._set_thread_state(thread_id, {"state": "waiting_edit"})
                 else:
                     # Increment failure count
-                    current_errors = self.state_store.get(thread_id, {}).get("notion_errors", 0) + 1
+                    current_errors = self._get_thread_state(thread_id).get("notion_errors", 0) + 1
                     
                     if current_errors >= 2:
                         await message.channel.send(
@@ -183,13 +277,13 @@ class DesignAgent(BaseAgent):
                             "Una vez creada, pega el link aquí."
                         )
                         # Reset to waiting for the link (or some neutral state)
-                        self.state_store[thread_id] = {"state": "waiting_edit", "notion_errors": 0} 
+                        self._set_thread_state(thread_id, {"state": "waiting_edit", "notion_errors": 0})
                     else:
                         await message.channel.send("❌ Error creando la tarea en Notion. Inténtalo de nuevo o revisa los datos.")
                         # Retain state but update errors
-                        state_data = self.state_store.get(thread_id, {"state": "waiting_task_details"})
+                        state_data = self._get_thread_state(thread_id) or {"state": "waiting_task_details"}
                         state_data["notion_errors"] = current_errors
-                        self.state_store[thread_id] = state_data
+                        self._set_thread_state(thread_id, state_data)
             else:
                 await message.channel.send("No pude entender el nombre del proyecto o tarea. ¿Podrías repetirlo? (Formato: Proyecto - Tarea)")
 
@@ -210,7 +304,7 @@ class DesignAgent(BaseAgent):
                     project = data_2.get("project", "Sin Proyecto")
                     title = data_2.get("title", "Nueva Tarea de Diseño")
                     deadline = data_2.get("deadline")
-                    thread_url = message.jump_url
+                    thread_url = self._thread_link(message, thread_id)
 
                     # Create Notion
                     notion_url = self.bot.notion.create_task(
@@ -218,7 +312,8 @@ class DesignAgent(BaseAgent):
                         title, 
                         project,
                         deadline=deadline,
-                        content=f"Solicitud original en Discord (Intake): {thread_url}\n\nContenido:\n{starter.content}"
+                        content=f"Solicitud original en Discord (Intake): {thread_url}\n\nContenido:\n{starter.content}",
+                        thread_url=thread_url
                     )
 
                     # Notify Team
@@ -239,7 +334,7 @@ class DesignAgent(BaseAgent):
 
                     await self.send_status(message.channel, True, feedback_text, final_approved=True)
                     await message.channel.send("¡Genial! ¿Quieres borrar nuestros mensajes de ayuda? (Responde 'sí')")
-                    self.state_store[thread_id] = {"state": "waiting_delete"}
+                    self._set_thread_state(thread_id, {"state": "waiting_delete"})
                 else:
                     # Still invalid, normal text feedback
                     await self.send_status(message.channel, False, resp_2.get("feedback"))
@@ -269,11 +364,11 @@ class DesignAgent(BaseAgent):
                  # Fallback to simple purge which might be easier
                  await message.channel.purge(limit=100, check=lambda m: m.id != thread_id)
                  
-             self.state_store.pop(thread_id, None)
+             self._clear_thread_state(thread_id)
 
         elif action == "request_edit":
             await self.send_status(message.channel, False, feedback)
-            self.state_store[thread_id] = {"state": "waiting_edit"}
+            self._set_thread_state(thread_id, {"state": "waiting_edit"})
 
         elif action == "handoff":
             # Post-approval handoff - bot is done, hand over to design team
