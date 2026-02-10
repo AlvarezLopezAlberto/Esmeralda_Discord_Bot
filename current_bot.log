@@ -23,3 +23,14 @@ INFO:adk.manager:Routing message to agent: design
 INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
 [2026-02-10 15:58:19] [INFO    ] discord.gateway: Shard ID None has successfully RESUMED session dfc2ccbb2ff11e64984a749a2fe206f1.
 INFO:discord.gateway:Shard ID None has successfully RESUMED session dfc2ccbb2ff11e64984a749a2fe206f1.
+INFO:adk.manager:Routing message to agent: design
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:adk.manager:Routing message to agent: design
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.notion.com/v1/pages "HTTP/1.1 400 Bad Request"
+Error creating task in Notion: body failed validation: body.children[0].paragraph.rich_text[0].text.content.length should be ≤ `2000`, instead was `2002`.
+INFO:httpx:HTTP Request: GET https://api.notion.com/v1/pages/303d14a8642b80b1ae1ec08370f82413 "HTTP/1.1 200 OK"
+INFO:adk.manager:Routing message to agent: design
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:adk.manager:Routing message to agent: design
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
