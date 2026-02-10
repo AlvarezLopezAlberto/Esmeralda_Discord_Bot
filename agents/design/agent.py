@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import datetime
+import calendar
 from adk.base import BaseAgent
 
 class DesignAgent(BaseAgent):
@@ -55,6 +56,79 @@ class DesignAgent(BaseAgent):
         if message.guild:
             return f"https://discord.com/channels/{message.guild.id}/{thread_id}/{thread_id}"
         return message.jump_url
+
+    def _reference_datetime(self, message: discord.Message) -> datetime.datetime:
+        if isinstance(message.channel, discord.Thread) and message.channel.created_at:
+            return message.channel.created_at
+        if message.created_at:
+            return message.created_at
+        return datetime.datetime.now(datetime.timezone.utc)
+
+    def _parse_iso_date(self, value: str):
+        if not value:
+            return None
+        try:
+            return datetime.date.fromisoformat(value)
+        except Exception:
+            try:
+                return datetime.datetime.fromisoformat(value).date()
+            except Exception:
+                return None
+
+    def _safe_date(self, year: int, month: int, day: int) -> datetime.date:
+        last_day = calendar.monthrange(year, month)[1]
+        return datetime.date(year, month, min(day, last_day))
+
+    def _normalize_deadline(self, deadline: str, reference_dt: datetime.datetime):
+        if not deadline:
+            return None
+        parsed = self._parse_iso_date(deadline)
+        if not parsed:
+            return deadline
+
+        reference_date = reference_dt.date()
+        candidate = self._safe_date(reference_date.year, parsed.month, parsed.day)
+        if candidate < reference_date:
+            candidate = self._safe_date(reference_date.year + 1, parsed.month, parsed.day)
+        return candidate.isoformat()
+
+    def _get_project_options(self):
+        try:
+            if not self.bot.notion or not self.bot.notion.is_enabled():
+                return []
+            return self.bot.notion.get_multi_select_options(self.notion_db_id, "Proyecto")
+        except Exception as e:
+            self.logger.warning(f"Failed to load project options: {e}")
+            return []
+
+    @staticmethod
+    def _canonical_project(value: str) -> str:
+        return " ".join((value or "").strip().lower().split())
+
+    def _match_project_option(self, project_raw: str, options):
+        if not project_raw:
+            return None
+        candidate = self._canonical_project(project_raw)
+        if not candidate or candidate in {"sin proyecto", "ninguno", "n/a"}:
+            return None
+        by_canon = {self._canonical_project(opt): opt for opt in (options or [])}
+        return by_canon.get(candidate)
+
+    async def _request_project(self, channel, thread_id: int, project_raw: str, options):
+        base = "Necesito el Nombre del Proyecto exacto en Notion para crear la tarea."
+        if project_raw:
+            base = f"No encontré el proyecto \"{project_raw}\" en Notion. Necesito el Nombre del Proyecto exacto."
+
+        message = base
+        if options:
+            preview = ", ".join(options[:20])
+            if len(options) > 20:
+                preview += f" (+{len(options) - 20} más)"
+            message += f"\n\nProyectos disponibles: {preview}"
+
+        message += "\n\nTip: la próxima vez incluye el nombre exacto del proyecto en tu mensaje para evitar demoras."
+        await channel.send(message)
+        self._set_thread_state(thread_id, {"state": "waiting_task_details"})
 
     async def _recover_state_from_history(self, channel: discord.Thread, thread_id: int) -> str:
         try:
@@ -142,11 +216,13 @@ class DesignAgent(BaseAgent):
         
         starter_content, recent_history = await self._build_thread_context(message.channel, thread_id)
 
+        reference_dt = self._reference_datetime(message)
         system_prompt = f"""
         {prompt_template}
         
         Current State: {current_state}
         Is Starter Message: {is_starter}
+        Thread Date (UTC): {reference_dt.date().isoformat()}
         """
         
         # If user replies, we feed that into the LLM logic
@@ -189,10 +265,18 @@ class DesignAgent(BaseAgent):
                 return
             
             # 1. Automate Task Creation
-            project = extracted_data.get("project", "Sin Proyecto")
+            project_raw = extracted_data.get("project")
             title = extracted_data.get("title", "Nueva Tarea de Diseño")
             deadline = extracted_data.get("deadline")  # ISO format YYYY-MM-DD or None
             thread_url = self._thread_link(message, thread_id)
+            reference_dt = self._reference_datetime(message)
+            deadline = self._normalize_deadline(deadline, reference_dt)
+
+            project_options = self._get_project_options()
+            project = self._match_project_option(project_raw, project_options)
+            if not project:
+                await self._request_project(message.channel, thread_id, project_raw, project_options)
+                return
             
             # Fetch starter message for full context
             try:
@@ -248,10 +332,16 @@ class DesignAgent(BaseAgent):
         elif action == "create_task":
             # This action might become redundant if "approve" does it, 
             # but keep it for the flow where user explicitly asks after "offer_creation"
-            project = extracted_data.get("project")
+            project_raw = extracted_data.get("project")
             title = extracted_data.get("title")
             deadline = extracted_data.get("deadline")
             
+            reference_dt = self._reference_datetime(message)
+            deadline = self._normalize_deadline(deadline, reference_dt)
+
+            project_options = self._get_project_options()
+            project = self._match_project_option(project_raw, project_options)
+
             if project and title:
                 thread_url = self._thread_link(message, thread_id)
                 url = self.bot.notion.create_task(
@@ -285,7 +375,11 @@ class DesignAgent(BaseAgent):
                         state_data["notion_errors"] = current_errors
                         self._set_thread_state(thread_id, state_data)
             else:
-                await message.channel.send("No pude entender el nombre del proyecto o tarea. ¿Podrías repetirlo? (Formato: Proyecto - Tarea)")
+                if not project:
+                    await self._request_project(message.channel, thread_id, project_raw, project_options)
+                else:
+                    await message.channel.send("No pude entender el título de la tarea. ¿Podrías repetirlo?")
+                    self._set_thread_state(thread_id, {"state": "waiting_task_details"})
 
         elif action == "validate_edit":
             # Fetch starter message
@@ -301,10 +395,18 @@ class DesignAgent(BaseAgent):
                     # Success! 
                     # Extract Data from NEW response
                     data_2 = resp_2.get("data", {})
-                    project = data_2.get("project", "Sin Proyecto")
+                    project_raw = data_2.get("project")
                     title = data_2.get("title", "Nueva Tarea de Diseño")
                     deadline = data_2.get("deadline")
                     thread_url = self._thread_link(message, thread_id)
+                    reference_dt = self._reference_datetime(message)
+                    deadline = self._normalize_deadline(deadline, reference_dt)
+
+                    project_options = self._get_project_options()
+                    project = self._match_project_option(project_raw, project_options)
+                    if not project:
+                        await self._request_project(message.channel, thread_id, project_raw, project_options)
+                        return
 
                     # Create Notion
                     notion_url = self.bot.notion.create_task(
