@@ -13,8 +13,11 @@ class DesignAgent(BaseAgent):
         self.notion_db_id = "9b1d386dbae1401b8a58af5a792e8f1f"
         self.existing_exception_thread_ids = {1470846699198222489}
         # Persistent state: {thread_id: {"state": "...", "notion_url": "...", "updated_at": "..."}}
+        # Ensure memory directory exists
+        os.makedirs(os.path.dirname(self._state_path()), exist_ok=True)
         self.state_store = self._load_state()
         self.boot_time = datetime.datetime.now(datetime.timezone.utc)
+        self.logger.info(f"DesignAgent initialized. Boot time: {self.boot_time}. State loaded: {len(self.state_store)} threads.")
 
     def _state_path(self):
         return os.path.join(os.getcwd(), "memory", "design_intake_state.json")
@@ -22,12 +25,15 @@ class DesignAgent(BaseAgent):
     def _load_state(self):
         path = self._state_path()
         if not os.path.exists(path):
+            self.logger.info(f"State file does not exist yet: {path}")
             return {}
         try:
             with open(path, "r") as f:
-                return json.load(f)
+                state = json.load(f)
+                self.logger.info(f"Loaded state from {path}: {len(state)} threads")
+                return state
         except Exception as e:
-            self.logger.warning(f"Failed to load state store: {e}")
+            self.logger.error(f"Failed to load state store from {path}: {e}")
             return {}
 
     def _save_state(self):
@@ -35,9 +41,10 @@ class DesignAgent(BaseAgent):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
             with open(path, "w") as f:
-                json.dump(self.state_store, f)
+                json.dump(self.state_store, f, indent=2)
+            self.logger.debug(f"State saved to {path}: {len(self.state_store)} threads")
         except Exception as e:
-            self.logger.warning(f"Failed to save state store: {e}")
+            self.logger.error(f"Failed to save state store to {path}: {e}", exc_info=True)
 
     def _get_thread_state(self, thread_id: int):
         return self.state_store.get(str(thread_id), {})
@@ -80,16 +87,41 @@ class DesignAgent(BaseAgent):
         return datetime.date(year, month, min(day, last_day))
 
     def _normalize_deadline(self, deadline: str, reference_dt: datetime.datetime):
+        """
+        Normalizes a deadline string to ensure it's not in the past.
+        If the LLM extracts a date with a past year, adjusts it to current or next year.
+        """
         if not deadline:
             return None
+        
         parsed = self._parse_iso_date(deadline)
         if not parsed:
-            return deadline
+            return deadline  # Return as-is if can't parse
 
         reference_date = reference_dt.date()
-        candidate = self._safe_date(reference_date.year, parsed.month, parsed.day)
-        if candidate < reference_date:
-            candidate = self._safe_date(reference_date.year + 1, parsed.month, parsed.day)
+        
+        # If parsed year is in the past, adjust to current/next year
+        if parsed.year < reference_date.year:
+            # Try with current year
+            candidate = self._safe_date(reference_date.year, parsed.month, parsed.day)
+            if candidate < reference_date:
+                # If that date already passed this year, use next year
+                candidate = self._safe_date(reference_date.year + 1, parsed.month, parsed.day)
+        elif parsed.year == reference_date.year:
+            # Same year - check if date already passed
+            candidate = self._safe_date(parsed.year, parsed.month, parsed.day)
+            if candidate < reference_date:
+                candidate = self._safe_date(reference_date.year + 1, parsed.month, parsed.day)
+        elif parsed.year == reference_date.year + 1:
+            # Next year is fine
+            candidate = parsed
+        else:
+            # More than 1 year in future - likely an error, use current year logic
+            self.logger.warning(f"Deadline year {parsed.year} is far in future. Using fallback logic.")
+            candidate = self._safe_date(reference_date.year, parsed.month, parsed.day)
+            if candidate < reference_date:
+                candidate = self._safe_date(reference_date.year + 1, parsed.month, parsed.day)
+        
         return candidate.isoformat()
 
     def _get_project_options(self):
@@ -130,6 +162,32 @@ class DesignAgent(BaseAgent):
         await channel.send(message)
         self._set_thread_state(thread_id, {"state": "waiting_task_details"})
 
+    async def _extract_notion_url_from_starter(self, channel: discord.Thread, thread_id: int) -> Optional[str]:
+        """Extract Notion URL from the thread starter message if present."""
+        try:
+            import re
+            starter = await channel.fetch_message(thread_id)
+            content = starter.content or ""
+            
+            # Look for Notion URLs
+            notion_urls = re.findall(r'(https?://(?:\S+\.)?notion\.(?:so|site)/[^\s]+)', content)
+            if notion_urls:
+                # Validate that it's from the correct database (emerald-dev workspace)
+                first_url = notion_urls[0]
+                
+                # Check if it's NOT from our workspace (contains a different database ID)
+                # Our database: 9b1d386dbae1401b8a58af5a792e8f1f
+                if '/9b1d386dbae1' not in first_url and 'emerald-dev' in first_url:
+                    # Return None and let the agent handle the user-provided link
+                    self.logger.info(f"Found Notion link but it's not from the correct database: {first_url}")
+                    return None
+                
+                # Return the first Notion URL found
+                return first_url
+        except Exception as e:
+            self.logger.warning(f"Failed to extract Notion URL from starter: {e}")
+        return None
+
     async def _recover_state_from_history(self, channel: discord.Thread, thread_id: int) -> str:
         try:
             async for m in channel.history(limit=10):
@@ -166,6 +224,8 @@ class DesignAgent(BaseAgent):
 
         state_entry = self._get_thread_state(thread_id)
         current_state = state_entry.get("state", "init")
+        
+        self.logger.debug(f"Thread {thread_id}: current_state='{current_state}', state_entry={state_entry}")
 
         # If thread was already handled, do nothing to avoid re-processing after restarts
         if current_state in {"approved", "ignored_existing"}:
@@ -173,9 +233,10 @@ class DesignAgent(BaseAgent):
                 self._clear_thread_state(thread_id)
                 current_state = "init"
             else:
+                self.logger.info(f"Thread {thread_id} already processed (state: {current_state}). Exiting.")
                 return
 
-        # If no state, try recovery or Notion double-check
+        # If no state, try recovery and Notion double-check
         if current_state == "init":
             # Recover from history (bot already interacted)
             recovered_state = await self._recover_state_from_history(message.channel, thread_id)
@@ -185,19 +246,8 @@ class DesignAgent(BaseAgent):
                 if current_state == "approved":
                     return
 
-            # Ignore pre-existing threads on boot if still init
-            try:
-                if (
-                    message.channel.created_at
-                    and message.channel.created_at < self.boot_time
-                    and thread_id not in self.existing_exception_thread_ids
-                ):
-                    self._set_thread_state(thread_id, {"state": "ignored_existing"})
-                    return
-            except Exception:
-                pass
-
-            # Notion double-check: if a task already exists for this thread, do nothing
+            # Notion double-check: if a task already exists for this thread, mark as approved
+            # This must happen BEFORE the boot-time check to avoid missing already-processed threads
             if message.guild:
                 existing_url = self.bot.notion.find_task_by_discord_thread(
                     self.notion_db_id,
@@ -205,8 +255,30 @@ class DesignAgent(BaseAgent):
                     thread_id
                 )
                 if existing_url:
+                    self.logger.info(f"Thread {thread_id} already has Notion task (via Discord Thread property): {existing_url}")
                     self._set_thread_state(thread_id, {"state": "approved", "notion_url": existing_url})
                     return
+            
+            # Additional check: Look for Notion link in the starter message itself
+            # This handles old threads created before the Discord Thread property was added
+            notion_url_from_starter = await self._extract_notion_url_from_starter(message.channel, thread_id)
+            if notion_url_from_starter:
+                self.logger.info(f"Thread {thread_id} has Notion link in starter message: {notion_url_from_starter}")
+                self._set_thread_state(thread_id, {"state": "approved", "notion_url": notion_url_from_starter})
+                return
+
+            # Ignore pre-existing threads on boot (except for exception threads)
+            try:
+                if (
+                    message.channel.created_at
+                    and message.channel.created_at < self.boot_time
+                    and thread_id not in self.existing_exception_thread_ids
+                ):
+                    self.logger.info(f"Ignoring pre-existing thread {thread_id} (created before boot)")
+                    self._set_thread_state(thread_id, {"state": "ignored_existing"})
+                    return
+            except Exception:
+                pass
         
         # Load Prompt
         prompt_template = self.load_prompt()

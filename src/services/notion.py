@@ -388,7 +388,7 @@ class NotionHandler:
                             {
                                 "type": "text",
                                 "text": {
-                                    "content": content[:2000] # Truncate to avoid Notion limit
+                                    "content": content[:1900] # Truncate to avoid Notion limit (using 1900 for safety margin)
                                 }
                             }
                         ]
