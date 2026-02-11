@@ -9,5 +9,10 @@ venv/
 # Environment variables
 .env
 
+# Logs
+*.log
+current_bot.log
+logs/*.log
+
 # MacOS
 .DS_Store
