@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from services.notion import NotionHandler
 from services.llm import LLMHandler
+from services.mcp import NotionMCPClient
 from keep_alive import keep_alive
 from adk import AgentManager
 from utilities.notion import process_notion_links
@@ -21,6 +22,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 # Initialize Services
 notion_service = NotionHandler()
 llm_service = LLMHandler()
+notion_mcp_client = NotionMCPClient()
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -31,6 +33,7 @@ class MyBot(commands.Bot):
         # Attach services
         self.notion = notion_service
         self.llm = llm_service
+        self.notion_mcp = notion_mcp_client
         self.agent_manager = None
 
     async def setup_hook(self):

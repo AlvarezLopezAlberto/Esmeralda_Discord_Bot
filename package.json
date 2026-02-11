@@ -1,0 +1,16 @@
+{
+    "name": "esmeralda-discord-bot",
+    "version": "1.0.0",
+    "description": "Discord bot with MCP integration for Notion",
+    "type": "module",
+    "scripts": {
+        "mcp:notion": "node --no-warnings node_modules/@modelcontextprotocol/server-notion/dist/index.js"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/server-notion": "^0.6.2"
+    },
+    "devDependencies": {},
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

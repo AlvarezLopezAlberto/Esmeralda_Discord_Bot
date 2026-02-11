@@ -1,6 +1,11 @@
 channels:
   - 1458858450355224709 # #design-intake forum ID
-allowed_tools: []
+allowed_tools:
+  - validate_intake
+  - extract_notion_url
+  - match_project
+  - create_notion_task
+  - update_task_status
 memory_policy:
   scope: user_agent_topic
   enabled: true
