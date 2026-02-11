@@ -17,10 +17,34 @@ class DesignAgent(BaseAgent):
         os.makedirs(os.path.dirname(self._state_path()), exist_ok=True)
         self.state_store = self._load_state()
         self.boot_time = datetime.datetime.now(datetime.timezone.utc)
+        self.mapping_file = os.path.join(os.getcwd(), "thread_notion_mapping.csv")
         self.logger.info(f"DesignAgent initialized. Boot time: {self.boot_time}. State loaded: {len(self.state_store)} threads.")
 
     def _state_path(self):
         return os.path.join(os.getcwd(), "memory", "design_intake_state.json")
+    
+    def _get_notion_url_from_csv(self, thread_id: int) -> tuple[Optional[str], Optional[str]]:
+        """Read thread-Notion mapping from CSV file. Returns (notion_url, status)."""
+        import csv
+        
+        if not os.path.exists(self.mapping_file):
+            self.logger.warning(f"Mapping file not found: {self.mapping_file}")
+            return None, None
+        
+        try:
+            with open(self.mapping_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row['thread_id'] == str(thread_id):
+                        notion_url = row.get('notion_url', '').strip()
+                        status = row.get('status', '').strip()
+                        if notion_url:
+                            return notion_url, status
+                        return None, status
+        except Exception as e:
+            self.logger.error(f"Error reading mapping file: {e}")
+        
+        return None, None
 
     def _load_state(self):
         path = self._state_path()
@@ -246,7 +270,18 @@ class DesignAgent(BaseAgent):
                 if current_state == "approved":
                     return
 
-            # Notion double-check: if a task already exists for this thread, mark as approved
+            # PRIMARY CHECK: CSV mapping file (single source of truth)
+            csv_notion_url, csv_status = self._get_notion_url_from_csv(thread_id)
+            if csv_notion_url:
+                self.logger.info(f"Thread {thread_id} found in CSV mapping with status '{csv_status}': {csv_notion_url}")
+                self._set_thread_state(thread_id, {"state": "approved", "notion_url": csv_notion_url})
+                return
+            elif csv_status == "ignored":
+                self.logger.info(f"Thread {thread_id} marked as 'ignored' in CSV mapping")
+                self._set_thread_state(thread_id, {"state": "ignored_existing"})
+                return
+
+            # FALLBACK: Notion API check (for new threads not in CSV yet)
             # This must happen BEFORE the boot-time check to avoid missing already-processed threads
             if message.guild:
                 existing_url = self.bot.notion.find_task_by_discord_thread(
@@ -255,12 +290,12 @@ class DesignAgent(BaseAgent):
                     thread_id
                 )
                 if existing_url:
-                    self.logger.info(f"Thread {thread_id} already has Notion task (via Discord Thread property): {existing_url}")
+                    self.logger.info(f"Thread {thread_id} found via Notion API (Discord Thread property): {existing_url}")
                     self._set_thread_state(thread_id, {"state": "approved", "notion_url": existing_url})
                     return
             
-            # Additional check: Look for Notion link in the starter message itself
-            # This handles old threads created before the Discord Thread property was added
+            # FALLBACK: Look for Notion link in the starter message itself
+            # This handles old threads not yet in CSV
             notion_url_from_starter = await self._extract_notion_url_from_starter(message.channel, thread_id)
             if notion_url_from_starter:
                 self.logger.info(f"Thread {thread_id} has Notion link in starter message: {notion_url_from_starter}")
