@@ -117,6 +117,26 @@ class NotionHandler:
             if name:
                 names.append(name)
         return names
+    
+    def get_select_options(self, database_id: str, property_name: str) -> List[str]:
+        """
+        Returns the option names for a select property in a Notion database.
+        """
+        if not self.is_enabled():
+            return []
+
+        props = self._get_database_properties(database_id)
+        prop_info = props.get(property_name) or {}
+        if prop_info.get("type") != "select":
+            return []
+
+        options = (prop_info.get("select") or {}).get("options", []) or []
+        names = []
+        for opt in options:
+            name = opt.get("name")
+            if name:
+                names.append(name)
+        return names
 
     def ensure_database_property(self, database_id: str, property_name: str, property_type: str = "url") -> bool:
         if not self.is_enabled():

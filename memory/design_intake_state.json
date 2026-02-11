@@ -3,5 +3,14 @@
   "1463668685993541696": {
     "state": "ignored_existing",
     "updated_at": "2026-02-11T00:51:24.991679"
+  },
+  "1470958073114791958": {
+    "state": "waiting_task_details",
+    "updated_at": "2026-02-11T01:44:37.344060"
+  },
+  "1469357510136958996": {
+    "state": "approved",
+    "notion_url": "https://www.notion.so/emerald-dev/Prototipo-interactivo-de-Figma-para-nuevo-flujo-de-Cobranza-360-2ffd14a8642b81768b9beac2457a30ec?source=copy_link",
+    "updated_at": "2026-02-11T18:00:00.850712"
   }
 }

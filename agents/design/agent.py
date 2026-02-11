@@ -149,17 +149,59 @@ class DesignAgent(BaseAgent):
         return candidate.isoformat()
 
     def _get_project_options(self):
+        """Get project options from Notion, with fallback to hardcoded list."""
         try:
             if not self.bot.notion or not self.bot.notion.is_enabled():
-                return []
-            return self.bot.notion.get_multi_select_options(self.notion_db_id, "Proyecto")
+                return self._fallback_project_list()
+            
+            # Try Select first (most common for single-choice)
+            options = self.bot.notion.get_select_options(self.notion_db_id, "Proyecto")
+            if options:
+                self.logger.info(f"Loaded {len(options)} projects from Notion (Select property)")
+                return options
+            
+            # Try Multi-select as fallback
+            options = self.bot.notion.get_multi_select_options(self.notion_db_id, "Proyecto")
+            if options:
+                self.logger.info(f"Loaded {len(options)} projects from Notion (Multi-select property)")
+                return options
+            
+            # If Notion doesn't return anything, use hardcoded list
+            self.logger.warning("Notion didn't return project options, using fallback list")
+            return self._fallback_project_list()
         except Exception as e:
             self.logger.warning(f"Failed to load project options: {e}")
-            return []
+            return self._fallback_project_list()
+    
+    def _fallback_project_list(self):
+        """Hardcoded project list as fallback."""
+        return [
+            "Comercial Sync",
+            "Cooltech",
+            "Solkos Intelligence",
+            "Cobranza 360°",
+            "Coolector iOS",
+            "Cask'r app",
+            "Coolservice",
+            "Vexia",
+            "Emerald",
+            "Negocon",
+            "MIDA",
+            "HDI",
+            "Other"
+        ]
 
     @staticmethod
     def _canonical_project(value: str) -> str:
-        return " ".join((value or "").strip().lower().split())
+        """Normalize project name for fuzzy matching: lowercase, no spaces, no special chars."""
+        import re
+        if not value:
+            return ""
+        # Remove special characters except letters/numbers, lowercase
+        normalized = re.sub(r'[^\w\s]', '', value.lower())
+        # Remove all spaces
+        normalized = normalized.replace(' ', '')
+        return normalized
 
     def _match_project_option(self, project_raw: str, options):
         if not project_raw:
