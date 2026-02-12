@@ -15,6 +15,7 @@ from .extract_notion_url import ExtractNotionURLSkill
 from .match_project import MatchProjectSkill
 from .create_notion_task import CreateNotionTaskSkill
 from .update_task_status import UpdateTaskStatusSkill
+from .conversation_memory import ConversationMemorySkill
 
 
 def create_design_skills_registry(bot) -> SkillRegistry:
@@ -41,6 +42,7 @@ def create_design_skills_registry(bot) -> SkillRegistry:
         bot.notion,
         getattr(bot, 'notion_mcp', None)
     )
+    conversation_memory = ConversationMemorySkill(bot.llm)
     
     # Register all skills
     registry.register(validate_intake)
@@ -48,6 +50,7 @@ def create_design_skills_registry(bot) -> SkillRegistry:
     registry.register(match_project)
     registry.register(create_notion_task)
     registry.register(update_task_status)
+    registry.register(conversation_memory)
     
     return registry
 
@@ -58,5 +61,6 @@ __all__ = [
     "MatchProjectSkill",
     "CreateNotionTaskSkill",
     "UpdateTaskStatusSkill",
+    "ConversationMemorySkill",
     "create_design_skills_registry"
 ]

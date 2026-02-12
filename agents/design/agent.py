@@ -11,7 +11,7 @@ from typing import Optional
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from adk.base import BaseAgent
-from skills.base import SkillContext, SkillExecutor
+from src.skills.base import SkillContext, SkillExecutor
 from .skills import create_design_skills_registry
 
 
@@ -81,6 +81,11 @@ class DesignAgent(BaseAgent):
     def _set_thread_state(self, thread_id: int, data: dict):
         data = dict(data or {})
         data["updated_at"] = datetime.datetime.utcnow().isoformat()
+        # Initialize memory tracking if not present
+        if "total_message_count" not in data:
+            data["total_message_count"] = 0
+        if "last_memory_summary_count" not in data:
+            data["last_memory_summary_count"] = 0
         self.state_store[str(thread_id)] = data
         self._save_state()
     
@@ -196,16 +201,27 @@ class DesignAgent(BaseAgent):
         return "init"
     
     async def _build_thread_context(self, channel: discord.Thread, thread_id: int, limit: int = 20):
-        """Builds a compact context payload so the LLM can synthesize across the full conversation."""
+        """
+        Builds a compact context payload including conversation memory summaries.
+        
+        This method:
+        1. Loads existing memory summaries from markdown files
+        2. Fetches recent messages (last N messages)
+        3. Triggers memory summary creation if message count threshold reached
+        4. Returns context with both memory and recent messages
+        """
         starter_content = ""
         recent_messages = []
+        all_messages_for_memory = []
 
+        # Fetch starter message
         try:
             starter = await channel.fetch_message(thread_id)
             starter_content = starter.content or ""
         except Exception as e:
             self.logger.warning(f"Failed to fetch starter message: {e}")
 
+        # Fetch recent message history
         try:
             history_items = []
             async for m in channel.history(limit=limit, oldest_first=True):
@@ -216,12 +232,73 @@ class DesignAgent(BaseAgent):
                     continue
 
                 history_items.append(f"[{author}] {content}")
+                
+                # Also collect for memory processing
+                all_messages_for_memory.append({
+                    "author": f"@{m.author.name}" if not m.author.bot else "BOT",
+                    "content": content,
+                    "timestamp": m.created_at.isoformat() if m.created_at else ""
+                })
 
             recent_messages = history_items
         except Exception as e:
             self.logger.warning(f"Failed to read thread history: {e}")
 
-        return starter_content, "\n".join(recent_messages)
+        # ========== CONVERSATION MEMORY INTEGRATION ==========
+        
+        # Get current thread state for memory tracking
+        state_entry = self._get_thread_state(thread_id)
+        current_message_count = len(all_messages_for_memory)
+        last_summary_count = state_entry.get("last_memory_summary_count", 0)
+        
+        # Load existing memory summary
+        memory_context = ""
+        try:
+            # The skill returns the file path, so we need to load it separately
+            memory_skill = self.skills_registry.get("conversation_memory")
+            if memory_skill:
+                loaded_memory = await memory_skill.load_memory(thread_id)
+                if loaded_memory:
+                    memory_context = f"\n\n=== CONVERSATION MEMORY (Previous Summaries) ===\n{loaded_memory}\n=== END MEMORY ===\n"
+        except Exception as e:
+            self.logger.warning(f"Failed to load conversation memory: {e}")
+        
+        # Check if we should create a new summary
+        if current_message_count >= 20:  # Only try if we have enough messages
+            try:
+                context = SkillContext(agent=self, message=None)
+                
+                # Determine which messages to summarize (last 20 or since last summary)
+                messages_since_last = all_messages_for_memory[last_summary_count:]
+                
+                # Only trigger if we have at least 20 new messages since last summary
+                if len(messages_since_last) >= 20:
+                    self.logger.info(
+                        f"Triggering memory summary for thread {thread_id}: "
+                        f"current={current_message_count}, last={last_summary_count}"
+                    )
+                    
+                    await self.skills_executor.execute(
+                        "conversation_memory",
+                        context,
+                        thread_id=thread_id,
+                        messages=messages_since_last[:20],  # Summarize exactly 20 messages
+                        thread_title=channel.name,
+                        current_count=current_message_count,
+                        last_summary_count=last_summary_count
+                    )
+                    
+                    # Update state to reflect new summary
+                    state_entry["last_memory_summary_count"] = last_summary_count + 20
+                    state_entry["total_message_count"] = current_message_count
+                    self._set_thread_state(thread_id, state_entry)
+                    
+            except Exception as e:
+                self.logger.error(f"Failed to create memory summary: {e}", exc_info=True)
+        
+        # Return combined context: memory summaries + recent messages
+        combined_history = memory_context + "\n".join(recent_messages)
+        return starter_content, combined_history
     
     async def send_status(self, channel, is_valid, text, final_approved=False):
         if final_approved and is_valid:
