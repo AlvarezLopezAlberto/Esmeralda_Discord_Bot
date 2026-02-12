@@ -10,6 +10,7 @@ class AgentManager:
         self.bot = bot
         self.agents = {} # name -> instance
         self.logger = logging.getLogger("adk.manager")
+        self.logger.setLevel(logging.DEBUG)
         logging.basicConfig(level=logging.INFO)
 
     def load_agents(self):
@@ -43,11 +44,15 @@ class AgentManager:
                 
                 # Find agent class
                 agent_class = None
+                self.logger.debug(f"Searching for BaseAgent subclass in {agent_name}")
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
-                    if isinstance(attr, type) and issubclass(attr, BaseAgent) and attr is not BaseAgent:
-                        agent_class = attr
-                        break
+                    if isinstance(attr, type):
+                        is_subclass = issubclass(attr, BaseAgent) if attr is not BaseAgent else False
+                        self.logger.debug(f"  {attr_name}: issubclass={is_subclass}, is_base={attr is BaseAgent}")
+                        if is_subclass:
+                            agent_class = attr
+                            break
                 
                 if not agent_class:
                     self.logger.error(f"No valid BaseAgent subclass found in {agent_name}/agent.py")

@@ -5,6 +5,7 @@ import os
 import sys
 import datetime
 import calendar
+import importlib.util
 from typing import Optional
 
 # Add paths for imports
@@ -12,7 +13,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from adk.base import BaseAgent
 from src.skills.base import SkillContext, SkillExecutor
-from .skills import create_design_skills_registry
 
 
 class DesignAgent(BaseAgent):
@@ -37,8 +37,13 @@ class DesignAgent(BaseAgent):
         self.boot_time = datetime.datetime.now(datetime.timezone.utc)
         self.mapping_file = os.path.join(os.getcwd(), "thread_notion_mapping.csv")
         
-        # Initialize skills
-        self.skills_registry = create_design_skills_registry(bot)
+        # Initialize skills with dynamic import
+        skills_init_path = os.path.join(agent_dir, 'skills', '__init__.py')
+        spec = importlib.util.spec_from_file_location("design_skills", skills_init_path)
+        skills_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(skills_module)
+        
+        self.skills_registry = skills_module.create_design_skills_registry(bot)
         self.skills_executor = SkillExecutor(self.skills_registry)
         
         self.logger.info(

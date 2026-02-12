@@ -287,3 +287,60 @@ class NotionMCPClient:
         except Exception as e:
             self.logger.error(f"Failed to update page: {e}")
             return False
+    
+    def query_database(
+        self,
+        database_id: str,
+        filter_params: Optional[Dict[str, Any]] = None,
+        sorts: Optional[List[Dict[str, str]]] = None,
+        start_cursor: Optional[str] = None,
+        page_size: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Query a Notion database with optional filters and sorting.
+        
+        Args:
+            database_id: Database ID to query
+            filter_params: Notion filter object
+            sorts: List of sort objects
+            start_cursor: Pagination cursor
+            page_size: Number of results per page
+            
+        Returns:
+            Query response with results
+        """
+        if not self.is_enabled():
+            self.logger.error("MCP client not enabled")
+            return {"results": []}
+        
+        try:
+            import httpx
+            
+            # Build query payload
+            payload = {"page_size": page_size}
+            
+            if filter_params:
+                payload["filter"] = filter_params
+            
+            if sorts:
+                payload["sorts"] = sorts
+            
+            if start_cursor:
+                payload["start_cursor"] = start_cursor
+            
+            # Direct POST to Notion API
+            url = f"https://api.notion.com/v1/databases/{database_id}/query"
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Notion-Version": "2022-06-28",
+                "Content-Type": "application/json"
+            }
+            
+            with httpx.Client() as http_client:
+                response = http_client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to query database: {e}", exc_info=True)
+            return {"results": []}

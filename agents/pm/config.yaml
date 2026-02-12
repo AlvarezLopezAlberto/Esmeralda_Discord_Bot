@@ -1,0 +1,13 @@
+channels:
+  - 1304569263293468682  # Daily sync channel
+allowed_tools:
+  - parse_daily_sync
+  - track_capacity
+  - manage_backlog
+  - document_decision
+  - translate_feedback
+memory_policy:
+  scope: user_agent_topic
+  enabled: true
+prompt_path: prompts/pm.txt
+description: "PM especializado en gestión de equipo de diseño. Capacity planning, backlog management, y traducción de feedback."
